@@ -4,70 +4,117 @@ Appointment, inventory, billing and analytics for small clinics, pharmacies and 
 businesses. ClinicFlow replaces the paper register and WhatsApp threads with a single, role-aware
 workspace where double bookings are impossible at the database level.
 
-- **Frontend:** React 18 + Vite + TypeScript, Tailwind CSS, React Router, React Hook Form + Zod,
-  Recharts, `@supabase/supabase-js`, jsPDF + jspdf-autotable.
-- **Backend:** Supabase only — PostgreSQL, Auth, Row Level Security, RPC functions, Edge Functions
-  (Deno), pg_cron + pg_net. No separate Node server.
-- **Email:** Resend, called only from Edge Functions.
-- **Hosting:** static `dist/` on Cloudflare Pages.
+**This repository has been migrated off React/Vite/TypeScript/Tailwind onto the required stack.
+The application behaviour, pages, workflows, validation, security model and database are
+unchanged.**
+
+| Layer | Before | After |
+| --- | --- | --- |
+| Structure | React JSX | **HTML5** (`frontend/index.html`, HTML templates in JS modules) |
+| Styling | Tailwind CSS + PostCSS | **CSS3** (`frontend/css/styles.css`, same palette and layout) |
+| Frontend logic | React 18 + TypeScript + React Router + React Hook Form + Zod + Recharts | **Vanilla JavaScript ES modules** (native History API router, hand-written validation, SVG charts) |
+| Backend | Supabase Edge Functions (Deno/TypeScript) | **Python 3.11 + FastAPI** (`backend/`) |
+| Build system | Vite, npm, TypeScript compiler | **None** — static files are served directly |
+| Database/Auth/Storage | Supabase | **Supabase (unchanged)** — same tables, RLS, RPCs, triggers, views |
+| PDF | jsPDF + jspdf-autotable | jsPDF + jspdf-autotable (vendored locally, called from vanilla JS) |
+
+No frontend framework, bundler or npm dependency remains. The only vendored JavaScript libraries are
+the Supabase browser SDK and jsPDF (needed for the existing PDF invoices); both live in
+`frontend/js/vendor/` and are loaded with plain `<script>` tags.
 
 ---
 
 ## Contents
 
-1. [Feature overview](#feature-overview)
+1. [Feature parity report](#feature-parity-report)
 2. [Architecture](#architecture)
 3. [Project structure](#project-structure)
 4. [Local development](#local-development)
 5. [Environment variables](#environment-variables)
 6. [Database and security model](#database-and-security-model)
-7. [Edge functions and email](#edge-functions-and-email)
-8. [Deployment A — Supabase](#deployment-a--supabase)
-9. [Deployment B — Cloudflare Pages](#deployment-b--cloudflare-pages)
-10. [Post-deploy checklist](#post-deploy-checklist)
-11. [Tests and quality checks](#tests-and-quality-checks)
-12. [Troubleshooting](#troubleshooting)
-13. [Security notes and limitations](#security-notes-and-limitations)
+7. [Python backend API](#python-backend-api)
+8. [Email and scheduled jobs](#email-and-scheduled-jobs)
+9. [Deployment](#deployment)
+10. [Tests and results](#tests-and-results)
+11. [Migration notes](#migration-notes)
+12. [Security notes and limitations](#security-notes-and-limitations)
+13. [Manual steps you must do yourself](#manual-steps-you-must-do-yourself)
 
 ---
 
-## Feature overview
+## Feature parity report
 
-| Area | Customer | Staff | Owner |
-| --- | --- | --- | --- |
-| Booking | Book/cancel own appointments, live free slots | — | — |
-| Schedule | Own appointment history | List + date/status/practitioner filters, status updates | Same as staff |
-| Invoices | View + download own PDF invoices | Create from appointment, line items, mark paid, PDF | Same as staff |
-| Inventory | — | CRUD, stock in/out with reason, low-stock/expiry badges, CSV export | Same as staff |
-| Analytics | — | — | Daily revenue line chart, busiest hours, top items, no-show rate |
-| Administration | — | — | Services, staff availability, role management, audit log |
-| Email | Booking confirmation + 24h reminder | — | Weekly low-stock/expiry digest |
+Every feature from the original React application was ported. "Ported" means the same UI, copy,
+validation, database calls and error handling are present in the new stack.
 
-Every signed-up account starts as **customer**. Only an owner can promote a user, and no one can
-change their own role (enforced by an RLS policy *and* a database trigger).
+| # | Feature | Original location | New location | Status |
+| --- | --- | --- | --- | --- |
+| 1 | Marketing landing page (hero, features, roles, steps, CTA, footer, dark-mode toggle) | `pages/LandingPage.tsx` | `frontend/js/pages/landing.js` | ✅ Ported |
+| 2 | Sign up (name, email, phone, password rules, confirmation state) | `pages/SignupPage.tsx` | `pages/auth.js` → `renderSignup` | ✅ Ported |
+| 3 | Sign in (redirect back to requested page) | `pages/LoginPage.tsx` | `renderLogin` | ✅ Ported |
+| 4 | Forgot password (sent state, change email) | `pages/ForgotPasswordPage.tsx` | `renderForgotPassword` | ✅ Ported |
+| 5 | Reset password (requires recovery session) | `pages/ResetPasswordPage.tsx` | `renderResetPassword` | ✅ Ported |
+| 6 | Guest-only routes and authenticated redirects | `components/guards.tsx` | `router.js` (`guest`, `app`, `roles`) | ✅ Ported |
+| 7 | Profile-missing recovery screen (refresh / sign out) | `guards.tsx` | `router.js` + `pages/auth.js` | ✅ Ported |
+| 8 | Role-aware app shell: sidebar groups, active link, mobile drawer, topbar, sign-out, footer | `components/AppShell.tsx` | `layout.js` | ✅ Ported |
+| 9 | Role-aware home redirect (`/app` → book or dashboard) | `pages/HomeRedirect.tsx` | `router.js` | ✅ Ported |
+| 10 | 404 page | `pages/NotFoundPage.tsx` | `renderNotFound` | ✅ Ported |
+| 11 | Dark mode with `localStorage` persistence, system default | `hooks/useTheme.ts` | `store.js` (`initTheme`, `toggleTheme`) | ✅ Ported |
+| 12 | Toast notifications (success / error / info, auto-dismiss, dismiss button) | `context/ToastContext.tsx` | `store.js` (`toast`) | ✅ Ported |
+| 13 | Accessible modal dialogs (Esc, backdrop, focus, scroll lock) | `components/ui/Modal.tsx` | `components.js` (`openModal`) | ✅ Ported |
+| 14 | Form field components with label/hint/error + ARIA wiring | `components/ui/Field.tsx` | `components.js` (`inputField`, `selectField`, `textareaField`) | ✅ Ported |
+| 15 | Client validation for every form (same messages as Zod) | `lib/schemas.ts` | `validation.js` | ✅ Ported |
+| 16 | Customer booking: services, practitioners, 21-day strip, live slots via `get_available_slots`, morning/afternoon/evening groups, notes counter, summary, `book_appointment` RPC, confirmation email call, friendly constraint errors | `pages/customer/BookAppointmentPage.tsx` | `pages/customer.js` → `renderBookAppointment` | ✅ Ported |
+| 17 | Customer appointments: upcoming/history split, status badges, cancel modal + `cancel_appointment` RPC | `MyAppointmentsPage.tsx` | `renderMyAppointments` | ✅ Ported |
+| 18 | Customer invoices: list, detail modal, line items, totals, PDF download | `MyInvoicesPage.tsx` | `renderMyInvoices` + `pdf.js` | ✅ Ported |
+| 19 | Staff dashboard: today's schedule, four stat cards, low-stock and expiry alerts | `pages/staff/DashboardPage.tsx` | `pages/staff.js` → `renderDashboard` | ✅ Ported |
+| 20 | Staff appointments: date range, status and practitioner filters, grouped by day, inline status update, reset filters | `AppointmentsPage.tsx` | `renderAppointments` | ✅ Ported |
+| 21 | Inventory: search + category filter, add/edit/delete item, stock movements, low/out/expiry badges, CSV export | `InventoryPage.tsx` | `renderInventory` | ✅ Ported |
+| 22 | Billing: invoice list, status + search filter, collected total, create invoice with line items and live totals, appointment autofill, mark paid, PDF | `BillingPage.tsx` | `renderBilling` | ✅ Ported |
+| 23 | Owner services: CRUD, activate/deactivate, delete guard for FK-bound services | `pages/owner/ServicesPage.tsx` | `pages/owner.js` → `renderServices` | ✅ Ported |
+| 24 | Owner staff & roles: search, role change (self disabled), weekly availability add/remove | `StaffPage.tsx` | `renderStaff` | ✅ Ported |
+| 25 | Analytics: 30-day revenue, appointments, no-show rate, average invoice, daily revenue chart, busiest hours chart, top items | `AnalyticsPage.tsx` | `renderAnalytics` + `charts.js` | ✅ Ported (SVG charts replace Recharts) |
+| 26 | Audit logs: table/action filters, insert/update/delete summary, expandable JSON | `AuditLogsPage.tsx` | `renderAuditLogs` | ✅ Ported |
+| 27 | Invoice PDF with clinic header, table, totals, footer | `lib/pdf.ts` | `frontend/js/pdf.js` | ✅ Ported |
+| 28 | Booking confirmation email | Edge Function | `POST /api/notifications/booking-confirmation` | ✅ Ported |
+| 29 | Daily reminder email job | Edge Function | `POST /api/jobs/send-reminders` | ✅ Ported |
+| 30 | Weekly low-stock/expiry digest | Edge Function | `POST /api/jobs/send-low-stock-alert` | ✅ Ported |
+| 31 | Booking rate limit, double-booking exclusion, RLS, role guards, audit triggers | SQL | **Untouched** | ✅ Preserved |
+| 32 | Seed data, demo accounts, email templates | `supabase/` | **Untouched** | ✅ Preserved |
+
+Nothing was replaced with a placeholder. The only intentional implementation changes are listed in
+[Migration notes](#migration-notes).
 
 ---
 
 ## Architecture
 
 ```
-Browser (React SPA on Cloudflare Pages)
-  │  anon key + user JWT (never a service_role key)
-  ├── Supabase Auth            signup, login, recovery
-  ├── PostgREST / RLS          tables, views, RPC (book_appointment, create_invoice …)
-  ├── Edge Functions           send-booking-confirmation (called after booking)
-  └── jsPDF                    invoice PDF generated in the browser
+Browser
+  ├── HTML5 pages + CSS3 + vanilla JS ES modules  (frontend/)
+  │     ├── Supabase browser SDK (anon key + user JWT) → Auth / PostgREST / RPC
+  │     ├── jsPDF + autotable → invoice PDFs (client-side, unchanged)
+  │     └── fetch → Python backend for confirmation emails
+  │
+Python backend (FastAPI)
+  ├── serves the static frontend and SPA fallback
+  ├── /api/config.js        public config (anon key, branding) — no secrets
+  ├── /api/health           readiness + configuration flags
+  ├── /api/notifications/*  verifies the caller JWT with RLS before sending
+  └── /api/jobs/*           service-role authenticated scheduled emails
 
 Supabase Postgres
-  ├── triggers                 profile bootstrap, role guard, stock movements, audit log
-  ├── exclusion constraint     no overlapping appointments per practitioner
-  ├── pg_cron + pg_net         daily reminders, weekly low-stock digest
-  └── Edge Functions           send-reminders, send-low-stock-alert ──► Resend API
+  ├── tables, enums, CHECK constraints, generated totals
+  ├── RLS policies, SECURITY DEFINER role helpers
+  ├── book_appointment / cancel_appointment / create_invoice RPCs
+  ├── GiST exclusion constraint (no double bookings)
+  ├── audit triggers, inventory movement trigger
+  └── reporting views (security_invoker)
 ```
 
-Double-booking protection is not a UI convention: `appointments_no_staff_overlap` is a GiST
-exclusion constraint over `(staff_id, tstzrange(starts_at, ends_at))` for non-cancelled rows, so
-two concurrent requests cannot both succeed.
+Double-booking protection is still not a UI convention: `appointments_no_staff_overlap` is a GiST
+exclusion constraint over `(staff_id, tstzrange(starts_at, ends_at))` for non-cancelled rows, so two
+concurrent requests cannot both succeed.
 
 ---
 
@@ -75,107 +122,118 @@ two concurrent requests cannot both succeed.
 
 ```
 clinicflow/
-├── index.html
-├── package.json
-├── vite.config.ts               Vite + Vitest config (build → dist)
-├── tsconfig.json                strict TS, noUncheckedIndexedAccess
-├── tailwind.config.js           blue/teal palette, class-based dark mode
-├── postcss.config.js
-├── .env.example                 frontend env template (anon key only)
-├── public/
-│   ├── _headers                 CSP, HSTS, X-Frame-Options, …
-│   ├── _redirects               /* /index.html 200 (SPA routing)
-│   └── favicon.svg
-├── src/
-│   ├── main.tsx
-│   ├── App.tsx                  route table + config banner
-│   ├── index.css                Tailwind layers
-│   ├── components/
-│   │   ├── AppShell.tsx         sidebar/topbar, role-aware navigation, dark mode
-│   │   ├── AuthLayout.tsx
-│   │   ├── Logo.tsx
-│   │   ├── guards.tsx           ProtectedLayout, GuestOnly, RoleGate
-│   │   ├── icons.tsx            inline SVG icon set (no icon dependency)
-│   │   └── ui/                  Button, Field, Card, Modal, Badge, Spinner
-│   ├── context/
-│   │   ├── AuthContext.tsx      session, profile, role, auth actions
-│   │   ├── ThemeContext.tsx
-│   │   └── ToastContext.tsx
-│   ├── hooks/
-│   │   ├── useFetch.ts
-│   │   └── useTheme.ts
-│   ├── lib/
-│   │   ├── config.ts            clinic branding/timezone from env
-│   │   ├── supabase.ts          browser client (anon key only)
-│   │   ├── schemas.ts           Zod validation for every form
-│   │   ├── utils.ts             currency, dates, CSV, status maps, errors
-│   │   ├── slots.ts             pure slot helpers (unit tested)
-│   │   ├── pdf.ts               jsPDF invoice generator
-│   │   ├── pdf-helpers.ts
-│   │   └── __tests__/           Vitest unit tests
-│   ├── pages/
-│   │   ├── LandingPage.tsx
-│   │   ├── LoginPage.tsx
-│   │   ├── SignupPage.tsx
-│   │   ├── ForgotPasswordPage.tsx
-│   │   ├── ResetPasswordPage.tsx
-│   │   ├── HomeRedirect.tsx
-│   │   ├── NotFoundPage.tsx
-│   │   ├── customer/            BookAppointment, MyAppointments, MyInvoices
-│   │   ├── staff/               Dashboard, Appointments, Inventory, Billing
-│   │   └── owner/               Services, Staff, Analytics, AuditLogs
-│   └── types/
-│       └── database.ts          hand-written schema types + Supabase Database generic
+├── README.md
+├── .env.example                  backend + public configuration template
+├── .gitignore
+├── frontend/                     HTML5 + CSS3 + vanilla JS (no build step)
+│   ├── index.html                single HTML entry point
+│   ├── assets/favicon.svg
+│   ├── css/
+│   │   └── styles.css            design system, components, dark mode, responsive rules
+│   └── js/
+│       ├── app.js                bootstrap (theme → auth → router)
+│       ├── router.js             routes, guards, SPA links, redirects
+│       ├── layout.js             app shell + auth layout
+│       ├── store.js              auth state, theme, toasts
+│       ├── supabase.js           browser client (anon key only)
+│       ├── config.js             runtime config from /api/config.js
+│       ├── api.js                all Supabase queries/RPCs in one place
+│       ├── components.js         buttons, fields, cards, badges, modals, loaders
+│       ├── icons.js              inline SVG icon set
+│       ├── validation.js         form validation (Zod parity)
+│       ├── utils.js              dates, money, CSV, errors, display maps
+│       ├── slots.js              pure slot helpers
+│       ├── pdf.js                invoice PDF generator
+│       ├── charts.js             SVG line/bar charts with tooltips
+│       ├── vendor/               supabase.js, jspdf.umd.min.js, autotable plugin
+│       └── pages/
+│           ├── landing.js
+│           ├── auth.js           login, signup, forgot, reset, 404
+│           ├── customer.js       book, my appointments, my invoices
+│           ├── staff.js          dashboard, appointments, inventory, billing
+│           └── owner.js          services, staff, analytics, audit logs
+├── backend/
+│   ├── run.py                    dev entry point (uvicorn --reload)
+│   ├── requirements.txt
+│   ├── app/
+│   │   ├── main.py               FastAPI app, security headers, static + SPA hosting
+│   │   ├── config.py             environment settings
+│   │   ├── supabase_rest.py      httpx client (PostgREST + GoTrue)
+│   │   ├── email.py              Resend sender + escaped HTML templates
+│   │   ├── security.py           JWT / service-role authentication
+│   │   └── routes/
+│   │       ├── meta.py           /api/health, /api/config, /api/config.js
+│   │       ├── notifications.py  booking confirmation
+│   │       └── jobs.py           reminders + low-stock digest
+│   └── tests/                    pytest suite (13 tests)
+├── tests/js/                     node:test suite for slots/utils/validation (33 tests)
 └── supabase/
-    ├── config.toml              local CLI config, auth redirects, function JWT settings
-    ├── seed.sql                 demo users/services/stock/appointments/invoices
-    ├── templates/               confirmation + recovery email HTML
-    ├── migrations/
-    │   ├── 20260101000000_extensions_and_types.sql
-    │   ├── 20260101000100_core_tables.sql
-    │   ├── 20260101000200_functions_and_triggers.sql
-    │   ├── 20260101000300_rls_policies.sql
-    │   ├── 20260101000400_views.sql
-    │   └── 20260101000500_cron_schedules.sql
-    └── functions/
-        ├── _shared/             http, supabase service client, Resend + HTML helpers
-        ├── send-reminders/
-        ├── send-low-stock-alert/
-        └── send-booking-confirmation/
+    ├── config.toml               local CLI config (auth redirects → :8000)
+    ├── seed.sql                  demo users/services/stock/appointments/invoices
+    ├── templates/                confirmation + recovery email HTML
+    └── migrations/
+        ├── 20260101000000_extensions_and_types.sql
+        ├── 20260101000100_core_tables.sql
+        ├── 20260101000200_functions_and_triggers.sql
+        ├── 20260101000300_rls_policies.sql
+        ├── 20260101000400_views.sql
+        ├── 20260101000500_cron_schedules.sql
+        └── 20260102000000_cron_python_backend.sql   ← new, additive, optional
 ```
 
 ---
 
 ## Local development
 
-Prerequisites: Node.js 20+, Docker Desktop, and the Supabase CLI
-(`npm install -g supabase` or `brew install supabase/tap/supabase`).
+Prerequisites:
+
+- **Python 3.11+**
+- **Docker Desktop** and the **Supabase CLI** (`npm install -g supabase` or `scoop install supabase`)
+  for the local database
+- **No Node.js/npm is required** to run the application. Node **22+** is only used for the optional
+  JavaScript unit tests (`node --test`); there is no `package.json`, so the tests rely on Node's
+  automatic ES-module detection.
 
 ```bash
-# 1. Install frontend dependencies
-npm install
+# 1. Python environment
+cd backend
+python -m venv .venv
+# Windows (Git Bash):
+./.venv/Scripts/python.exe -m pip install -r requirements.txt
+# macOS/Linux:
+# .venv/bin/pip install -r requirements.txt
+cd ..
 
 # 2. Start the local Supabase stack (Postgres, Auth, Studio, Inbucket)
 supabase start
 
-# 3. Apply migrations + seed data (destroys and recreates the local DB)
+# 3. Apply migrations + seed data to the LOCAL database
+#    (destroys and recreates only the local docker database)
 supabase db reset
 
-# 4. Copy the local URL and anon key printed by `supabase status` into .env
+# 4. Configure the backend
 cp .env.example .env
-#    VITE_SUPABASE_URL=http://127.0.0.1:54321
-#    VITE_SUPABASE_ANON_KEY=<anon key from supabase status>
+#    Read the URL and anon key from `supabase status` and fill in:
+#      SUPABASE_URL=http://127.0.0.1:54321
+#      SUPABASE_ANON_KEY=<anon key>
+#      SUPABASE_SERVICE_ROLE_KEY=<service_role key>
+#    Resend is optional locally (leave RESEND_API_KEY empty to disable email).
 
-# 5. Start the app
-npm run dev          # http://localhost:5173
+# 5. Run the app (serves the SPA and the API on one origin)
+python backend/run.py            # http://localhost:8000
 ```
 
-Useful local commands:
+The app is available at <http://localhost:8000>. `supabase/config.toml` already lists
+`http://localhost:8000/login` and `/reset-password` as allowed redirect URLs.
+
+Useful commands:
 
 ```bash
-supabase status                 # URLs and keys
-supabase db diff                # schema drift
-supabase functions serve send-booking-confirmation --env-file ./supabase/.env.local
+supabase status                                        # local URLs and keys
+supabase db diff                                       # schema drift
+python -m pytest backend/tests -q                      # backend tests
+node --test tests/js/*.test.mjs                        # JS unit tests
+curl http://localhost:8000/api/health                  # readiness + config flags
 ```
 
 ### Demo accounts (from `seed.sql`)
@@ -194,40 +252,37 @@ Delete or change these accounts before using the project with real data.
 
 ## Environment variables
 
-Frontend (`.env`, also set in Cloudflare Pages):
+All variables are read by the Python backend from `.env`. The browser only receives the public
+subset through `/api/config.js`.
 
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `VITE_SUPABASE_URL` | yes | Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | yes | Public anon key (safe for browsers) |
-| `VITE_CLINIC_NAME` | no | Branding in the shell and PDF header |
-| `VITE_CLINIC_ADDRESS` | no | PDF header |
-| `VITE_CLINIC_PHONE` | no | PDF header |
-| `VITE_CLINIC_EMAIL` | no | PDF header |
-| `VITE_CLINIC_CURRENCY` | no | ISO currency code, default `USD` |
-| `VITE_CLINIC_TIMEZONE` | no | IANA zone used for display, default `UTC` |
+| Variable | Required | Public? | Purpose |
+| --- | --- | --- | --- |
+| `SUPABASE_URL` | yes | yes | Supabase project URL |
+| `SUPABASE_ANON_KEY` | yes | yes | Public anon key (safe for browsers) |
+| `SUPABASE_SERVICE_ROLE_KEY` | yes for email/jobs | **no** | Server-side reads and auth email lookup |
+| `RESEND_API_KEY` | for email | **no** | Resend API authentication |
+| `RESEND_FROM_EMAIL` | recommended | no | Verified sender |
+| `CLINIC_NAME` | no | yes | Shell, PDF and email branding |
+| `CLINIC_ADDRESS` | no | yes | PDF/email header |
+| `CLINIC_PHONE` | no | yes | PDF/email header |
+| `CLINIC_EMAIL` | no | yes | PDF/email header |
+| `CLINIC_CURRENCY` | no | yes | ISO currency code, default `USD` |
+| `CLINIC_TIMEZONE` | no | yes | IANA zone used for display and emails |
+| `HOST` / `PORT` | no | no | Bind address, default `127.0.0.1:8000` |
+| `APP_ORIGIN` | no | no | CORS/auth origin, default `http://localhost:8000` |
+| `API_BASE_URL` | no | yes | Absolute backend URL if frontend is hosted elsewhere |
 
-> **Never** put `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY` or any other secret in a `VITE_*`
-> variable. Vite inlines those into the public bundle.
-
-Edge Function secrets (Supabase only, never in this repo):
-
-| Secret | Required | Purpose |
-| --- | --- | --- |
-| `RESEND_API_KEY` | yes | Resend API authentication |
-| `RESEND_FROM_EMAIL` | recommended | Verified sender, e.g. `ClinicFlow <no-reply@yourclinic.com>` |
-| `CLINIC_NAME` | no | Email branding |
-| `CLINIC_TIMEZONE` | no | Email date formatting |
-| `CLINIC_CURRENCY` | no | Email currency |
-
-`SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are injected into deployed Edge
-Functions automatically.
+> **Never** commit `.env`, and never expose `SUPABASE_SERVICE_ROLE_KEY` or `RESEND_API_KEY` to the
+> browser. `/api/config.js` is generated from an explicit allow-list (`Settings.public_config`).
 
 ---
 
 ## Database and security model
 
-### Migrations (apply in filename order)
+The Supabase schema is **unchanged**. No table, column, constraint, policy, function, trigger, view or
+row was modified by this migration.
+
+### Existing migrations (apply in filename order)
 
 1. **Extensions and types** — `pgcrypto`, `btree_gist`, `pg_cron`, `pg_net`; `user_role`,
    `appointment_status`, `invoice_status`.
@@ -239,315 +294,318 @@ Functions automatically.
    movements, audit trail.
 4. **RLS policies** — RLS enabled on every table with explicit per-role policies.
 5. **Views** — `low_stock_items`, `expiring_soon_items`, `daily_revenue`, `busiest_hours`
-   (all `security_invoker = true`).
-6. **Cron schedules** — `schedule_clinicflow_jobs()` using Vault secrets + pg_net.
+   (`security_invoker = true`).
+6. **Cron schedules** — legacy `schedule_clinicflow_jobs()` calling Edge Functions.
 
-### Key rules
+### New migration (additive, not applied automatically)
 
-- `get_my_role()` is `SECURITY DEFINER` with `set search_path = public, pg_temp` and is the only
-  role helper used by policies, which prevents RLS recursion on `profiles`.
-- Customers can read/insert (pending only)/cancel their own appointments and read their own
-  invoices + invoice items. Staff and owners see clinic-wide records. Only owners manage services,
-  availability, roles, analytics and audit logs.
-- `guard_profile_role_change` blocks self-promotion even if a policy is ever misconfigured.
+`supabase/migrations/20260102000000_cron_python_backend.sql` **only adds a function**
+`schedule_clinicflow_backend_jobs(base_url)`. It does not alter data or existing objects. It lets
+pg_cron call the Python job endpoints instead of the removed Edge Functions. See
+[Email and scheduled jobs](#email-and-scheduled-jobs).
+
+### Key rules preserved
+
+- `get_my_role()` is `SECURITY DEFINER` with `set search_path = public, pg_temp` and is the only role
+  helper used by policies, preventing RLS recursion on `profiles`.
+- Customers read/insert (pending only)/cancel their own appointments and read their own invoices and
+  invoice items. Staff and owners see clinic-wide records. Only owners manage services, availability,
+  roles, analytics and audit logs.
+- `guard_profile_role_change` blocks self-promotion even if a policy were misconfigured.
 - `book_appointment()` enforces: authenticated user, future date, ≤ 90 days ahead, active service,
   valid practitioner, max **5 bookings per customer per rolling hour**, and the time must be
   returned by `get_available_slots()`. The exclusion constraint is the final race guard.
 - `inventory_movements` is append-only; inserting a movement updates stock atomically and raises if
   the result would be negative.
 - Every change to appointments, inventory items, invoices and `profiles.role` writes to
-  `audit_logs` through a `SECURITY DEFINER` trigger; only owners can read them.
+  `audit_logs` through a `SECURITY DEFINER` trigger.
 - `total` and `line_total` are generated columns, so invoice math cannot drift.
-- Client validation (Zod) mirrors SQL CHECK constraints; the database remains authoritative.
+- Client validation mirrors the SQL CHECK constraints; the database remains authoritative.
 
 ### Clinic timezone
 
 Weekly availability is stored as wall-clock times. Slot generation and reporting interpret them in
-the timezone returned by `public.clinic_timezone()`, which reads the `clinicflow.timezone` setting
-and falls back to `UTC`.
+the timezone returned by `public.clinic_timezone()`, which reads the `clinicflow.timezone` setting and
+falls back to `UTC`.
 
 ```sql
 alter database postgres set clinicflow.timezone = 'Europe/London';
--- then reconnect/reload, or run: select pg_reload_conf();
+select pg_reload_conf();
 ```
 
-Set `VITE_CLINIC_TIMEZONE` to the **same** zone so displayed times match bookable slots. Email
-formatting uses `CLINIC_TIMEZONE` on the Edge Functions.
+Set `CLINIC_TIMEZONE` to the **same** zone so displayed times match bookable slots.
 
 ---
 
-## Edge functions and email
+## Python backend API
 
-| Function | Trigger | Auth check |
+| Method | Path | Auth | Purpose | Success response |
+| --- | --- | --- | --- | --- |
+| GET | `/api/health` | none | Readiness + which secrets are configured | `{status, supabase_configured, admin_configured, email_configured}` |
+| GET | `/api/config` | none | Public config JSON | `{SUPABASE_URL, SUPABASE_ANON_KEY, CLINIC_*}` |
+| GET | `/api/config.js` | none | Same config as `window.__CLINICFLOW_CONFIG__` | JavaScript |
+| POST | `/api/notifications/booking-confirmation` | user JWT | Booking confirmation email; RLS decides visibility first | `{sent: true}` / `{sent:false, reason}` |
+| POST | `/api/jobs/send-reminders` | `Bearer <service_role_key>` | Reminders for pending/confirmed visits in the next 24 h | `{checked, sent, skipped, failures}` |
+| POST | `/api/jobs/send-low-stock-alert` | `Bearer <service_role_key>` | Weekly digest to all owners | `{low_stock, expiring, owners, sent, failures}` |
+| GET | `/api/docs` | none | Interactive OpenAPI docs (development aid) | Swagger UI |
+| GET | `/*` | none | Static assets, SPA fallback to `index.html` | HTML/CSS/JS |
+
+The backend never writes application data directly: all mutations still go through Supabase PostgREST
+or RPCs from the browser, under RLS. The service role is used only for auth-email lookups and the two
+scheduled digests.
+
+---
+
+## Email and scheduled jobs
+
+Email is sent through Resend, exactly as before, with the same templates and escaping.
+
+| Job | Trigger | Auth check |
 | --- | --- | --- |
-| `send-booking-confirmation` | Browser calls it after a successful booking | Caller's JWT + RLS visibility of the appointment |
-| `send-reminders` | pg_cron, daily 08:00 UTC | `Authorization: Bearer <service_role_key>` |
-| `send-low-stock-alert` | pg_cron, Mondays 07:00 UTC | `Authorization: Bearer <service_role_key>` |
+| Booking confirmation | Browser calls the backend after a successful booking (best effort) | Caller's JWT is validated and the appointment must be visible under RLS |
+| Daily reminders | pg_cron, 08:00 UTC | `Authorization: Bearer <service_role_key>` |
+| Weekly low-stock digest | pg_cron, Mondays 07:00 UTC | `Authorization: Bearer <service_role_key>` |
 
-Reminders cover appointments in the **next 24 hours** with status `pending` or `confirmed`. The
-low-stock digest includes every item at/below its reorder level and every item expiring within 30
-days (including already-expired stock), and is sent to all owners.
-
-Email sending is best-effort on booking: a Resend failure never rolls back a confirmed appointment.
-
-### Manual test of a deployed function
+Set secrets in `.env` on the backend host:
 
 ```bash
-curl -i -X POST "https://<project-ref>.supabase.co/functions/v1/send-reminders" \
+RESEND_API_KEY=re_xxxxxxxxxxxxxxxx
+RESEND_FROM_EMAIL="ClinicFlow <no-reply@yourclinic.com>"
+CLINIC_NAME="Your Clinic"
+CLINIC_TIMEZONE="Europe/London"
+CLINIC_CURRENCY="GBP"
+```
+
+### Scheduling against the Python backend
+
+1. Store the service role key in **Project Settings → Vault → `service_role_key`**.
+2. Apply the new migration (`supabase db push`, or paste the SQL in the SQL editor).
+3. Run once, with your deployed backend URL:
+
+```sql
+select public.schedule_clinicflow_backend_jobs('https://your-api.example.com');
+select jobid, jobname, schedule, active from cron.job;
+```
+
+To unschedule: `select public.schedule_clinicflow_backend_jobs('');`.
+
+Manual test of a deployed job:
+
+```bash
+curl -i -X POST "https://your-api.example.com/api/jobs/send-reminders" \
   -H "Authorization: Bearer <service_role_key>" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
 
-Expected: `200` with `{ "checked": n, "sent": n, ... }`. A `401` means the Authorization header is
-not exactly the service role key.
+Expected `200` and `{ "checked": n, "sent": n, ... }`; `401` means the header is not exactly the
+service role key.
 
 ---
 
-## Deployment A — Supabase
+## Deployment
 
-### A1. Create the project
+The backend is a long-running Python process, so it needs a host that runs Python — for example
+Render, Railway, Fly.io, a VPS with systemd, or a container platform. Static hosting alone
+(Cloudflare Pages, GitHub Pages) cannot run FastAPI. The application is designed so the backend
+serves both the API and the static frontend on one origin, which keeps CORS, CSP and Supabase auth
+redirects simple.
 
-1. Create a project at <https://supabase.com/dashboard>. Choose a region close to the clinic and save
-   the database password.
-2. From **Project Settings → API** copy:
-   - Project URL → `VITE_SUPABASE_URL`
-   - `anon` public key → `VITE_SUPABASE_ANON_KEY`
-   - `service_role` key → keep secret; never put it in the frontend.
+### A. Supabase
 
-### A2. Push the schema
+1. Create a project, note the URL, anon key and service role key.
+2. From **Project Settings → API**, copy the three values into the backend environment.
+3. Push the schema (or run the migration files in the SQL editor in filename order):
+   `supabase link --project-ref <ref> && supabase db push`.
+4. Set the clinic timezone:
+   ```sql
+   alter database postgres set clinicflow.timezone = 'Europe/London';
+   select pg_reload_conf();
+   ```
+5. **Authentication → Providers → Email**: enable Email and confirmation.
+6. **Authentication → URL Configuration**:
+   - Site URL: `https://your-api.example.com`
+   - Redirect URLs: `https://your-api.example.com/login`,
+     `https://your-api.example.com/reset-password`.
+7. Create the first owner:
+   ```sql
+   update public.profiles set role = 'owner'
+   where id = (select id from auth.users where email = 'you@yourclinic.com');
+   ```
 
-With the Supabase CLI:
-
-```bash
-supabase login
-supabase link --project-ref <project-ref>
-supabase db push          # applies supabase/migrations in order
-```
-
-Without the CLI: open **SQL Editor** and run the migration files in filename order, then optionally
-run `supabase/seed.sql`.
-
-The first migration enables `pg_cron` and `pg_net`. If your plan/project does not allow an
-extension, enable it under **Database → Extensions** and re-run that migration.
-
-### A3. Configure the clinic timezone
-
-```sql
-alter database postgres set clinicflow.timezone = 'Europe/London';  -- your zone
-select pg_reload_conf();
-```
-
-### A4. Configure Auth
-
-1. **Authentication → Providers → Email**: enable Email. Decide whether “Confirm email” is on.
-   For production, keep it on.
-2. **Authentication → URL Configuration**:
-   - Site URL: `https://your-app.pages.dev` (or your custom domain)
-   - Redirect URLs: `https://your-app.pages.dev/login`, `https://your-app.pages.dev/reset-password`,
-     plus `http://localhost:5173/**` for local development.
-3. Optional: customise the templates under **Authentication → Email Templates** (the repo includes
-   `supabase/templates/confirmation.html` and `recovery.html` for the CLI).
-4. Password policy: minimum 8 characters is enforced client-side and by the seed/config.
-
-### A5. Create the first owner
-
-New signups are always customers by design, so bootstrap the first owner manually:
-
-1. Sign up through the app (or **Authentication → Users → Add user**).
-2. In the SQL editor:
-
-```sql
-update public.profiles
-set role = 'owner'
-where id = (select id from auth.users where email = 'you@yourclinic.com');
-
-select id, full_name, role from public.profiles order by created_at;
-```
-
-Promote staff the same way, or from **Staff & roles** inside the app afterwards. The role change
-trigger allows this because it runs as the database owner (no `auth.uid()`), and every subsequent
-role change made from the app is audited.
-
-### A6. Resend
-
-1. Create a Resend account and **verify your sending domain** (DNS records). Until a domain is
-   verified, Resend only delivers to your own account email.
-2. Create an API key with sending permission.
-3. Set the secrets (never commit them):
+### B. Python backend
 
 ```bash
-supabase secrets set RESEND_API_KEY=re_xxxxxxxxxxxxxxxx \
-  RESEND_FROM_EMAIL="ClinicFlow <no-reply@yourclinic.com>" \
-  CLINIC_NAME="Your Clinic" \
-  CLINIC_TIMEZONE="Europe/London" \
-  CLINIC_CURRENCY="GBP"
+# Any Python 3.11+ host
+python -m venv .venv
+.venv/bin/pip install -r backend/requirements.txt
+# Provide .env (never commit it), then:
+.venv/bin/python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Or paste them in **Project Settings → Edge Functions → Secrets**. In the Sites/Cloudflare world,
-keep the key out of the frontend entirely.
+Health check: `GET /api/health` must return `supabase_configured: true` (and
+`admin_configured: true` for email jobs).
 
-### A7. Deploy the Edge Functions
+Example `systemd` unit:
+
+```ini
+[Unit]
+Description=ClinicFlow
+After=network.target
+
+[Service]
+WorkingDirectory=/srv/clinicflow
+EnvironmentFile=/srv/clinicflow/.env
+ExecStart=/srv/clinicflow/.venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Put a TLS reverse proxy (Caddy, nginx, the platform's router) in front. The app sends HSTS,
+`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`,
+`Permissions-Policy` and a strict CSP with `connect-src` automatically allowed for your Supabase
+project.
+
+### C. Reverse-proxy note
+
+The SPA uses real paths (`/app/dashboard`). The FastAPI catch-all already serves `index.html` for
+unknown paths, so no extra rewrite rule is required. If you front it with nginx, forward all requests
+to the Python process rather than serving `frontend/` directly (otherwise deep links 404).
+
+---
+
+## Tests and results
+
+Run the suites:
 
 ```bash
-supabase functions deploy send-booking-confirmation
-supabase functions deploy send-reminders
-supabase functions deploy send-low-stock-alert
+# JavaScript unit tests (Node 22+, no dependencies)
+node --test tests/js/*.test.mjs
+
+# Python backend tests (FastAPI TestClient)
+python -m pytest backend/tests -q
 ```
 
-JWT verification is configured in `supabase/config.toml`: the booking confirmation requires a JWT
-(the browser sends it automatically), while the two cron functions verify the service role key
-themselves. If you deploy with the dashboard instead, set **Verify JWT** accordingly.
+### Actual results in this workspace
 
-### A8. Schedule the cron jobs
-
-The schedule SQL is in `20260101000500_cron_schedules.sql`. It reads the project URL and service
-role key from **Vault** so no secret is stored in migrations:
-
-1. **Project Settings → Vault → Add new secret**
-   - `project_url` = `https://<project-ref>.supabase.co` (no trailing slash)
-   - `service_role_key` = the service role key
-2. Run in the SQL editor:
-
-```sql
-select public.schedule_clinicflow_jobs();
-select jobid, jobname, schedule, active from cron.job;
-```
-
-Jobs created:
-
-| Job | Schedule (UTC) | Function |
+| Suite | Command | Result |
 | --- | --- | --- |
-| `clinicflow-send-reminders` | `0 8 * * *` | daily reminders |
-| `clinicflow-low-stock-alert` | `0 7 * * 1` | Monday inventory digest |
+| JavaScript unit tests | `node --test tests/js/*.test.mjs` | **33 passing, 0 failing** |
+| Python backend tests | `python -m pytest backend/tests -q` | **13 passing, 0 failing** |
 
-Change the cron expressions to match the clinic's local morning, then re-run the function. Inspect
-runs with:
+Coverage:
 
-```sql
-select * from cron.job_run_details order by start_time desc limit 20;
-select * from net._http_response order by created desc limit 20;
-```
+- JS: slot generation/overlap/partitioning, invoice math and rounding, clinic-timezone date helpers,
+  CSV escaping, invoice numbering, error mapping, and all ten validation validators (parity with the
+  old Zod messages).
+- Python: HTML escaping, email layout/branding, date/money/timezone formatting, `/api/health`,
+  `/api/config` secret allow-list, `/api/config.js` content type and globals, service-role enforcement
+  on both jobs, booking-confirmation authentication, security headers, SPA fallback, static assets.
 
-If the Vault secrets are missing, the migration still succeeds and prints a notice; the jobs are
-simply not scheduled yet.
+### What was *not* exercised
 
----
+No Supabase credentials are configured in this workspace, so the following were **not** run against
+a live database and are **not claimed as tested**:
 
-## Deployment B — Cloudflare Pages
+- Signup/login/password reset against Supabase Auth
+- Booking, cancellation, invoice RPCs and RLS enforcement with real users
+- Email delivery through Resend
+- pg_cron → Python job execution
 
-1. Push this repository to GitHub.
-2. Cloudflare Dashboard → **Workers & Pages → Create → Pages → Connect to Git**.
-3. Select the repository and use:
+The database-facing code paths are unchanged from the original implementation (same tables, RPCs,
+select strings and RLS), and the frontend was exercised in a browser for rendering and navigation.
+To verify end-to-end, follow [Local development](#local-development) with `supabase start` and the
+demo accounts, then run the post-deploy checklist below.
 
-   | Setting | Value |
-   | --- | --- |
-   | Framework preset | Vite (or None) |
-   | Build command | `npm run build` |
-   | Build output directory | `dist` |
-   | Node version | 20 or newer (`NODE_VERSION=20`) |
-
-4. **Environment variables** (Production *and* Preview):
-
-   ```
-   VITE_SUPABASE_URL=https://<project-ref>.supabase.co
-   VITE_SUPABASE_ANON_KEY=<anon key>
-   VITE_CLINIC_NAME=Your Clinic
-   VITE_CLINIC_TIMEZONE=Europe/London
-   VITE_CLINIC_CURRENCY=GBP
-   VITE_CLINIC_ADDRESS=...
-   VITE_CLINIC_PHONE=...
-   VITE_CLINIC_EMAIL=...
-   ```
-
-5. Deploy. `public/_redirects` provides the SPA fallback (`/* /index.html 200`) and
-   `public/_headers` adds CSP, HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
-   `Referrer-Policy` and `Permissions-Policy`.
-6. Add the Pages URL (and custom domain) to Supabase **Authentication → URL Configuration**.
-7. Optional custom domain: **Pages → Custom domains → Set up a domain**, then add
-   `https://clinic.yourdomain.com/login` and `/reset-password` to the Supabase redirect allow list.
-
-### Content Security Policy note
-
-`public/_headers` allows connections to `https://*.supabase.co` and `wss://*.supabase.co`. If you
-front Supabase with a custom domain, add that host to `connect-src`. Inline styles are allowed
-because Recharts and the PDF preview use them; no inline scripts or `eval` are used, and the app
-never calls `dangerouslySetInnerHTML`.
-
----
-
-## Post-deploy checklist
-
-Run through this on the deployed URL, in a private window, with fresh accounts:
+### Suggested end-to-end checklist (with a live Supabase project)
 
 **Roles and routing**
-- [ ] Sign up as a new user → lands in customer booking flow; `/app/dashboard` redirects back.
+
+- [ ] Sign up → lands in the customer booking flow; `/app/dashboard` redirects back.
 - [ ] Owner promotes the user in **Staff & roles** → after refresh the staff nav appears.
-- [ ] Owner cannot change their own role in the UI or via SQL as themselves.
-- [ ] Customer cannot open `/app/analytics` or `/app/audit-logs` (role gate redirects).
+- [ ] Owner cannot change their own role; customer cannot open `/app/analytics`.
 
 **Booking and double booking**
-- [ ] Customer books a service → appointment appears as `pending`, confirmation email arrives.
-- [ ] In two browser windows, try to book the exact same practitioner/time → the second request is
-      rejected with “That slot was just booked by someone else.”
-- [ ] Booking 6 times within an hour returns the rate-limit message.
-- [ ] Customer cancels → slot immediately becomes available again.
+
+- [ ] Customer books → appointment appears as `pending`; confirmation email arrives.
+- [ ] Two windows booking the same practitioner/time → second gets "That slot was just booked…".
+- [ ] Booking 6 times in an hour returns the rate-limit message.
+- [ ] Customer cancels → the slot becomes available again.
 - [ ] Owner deactivates a service → it disappears from the booking step.
 
 **RLS**
-- [ ] In the browser console of customer A, run
-      `await supabase.from('appointments').select('*')` → only A's rows.
-- [ ] With customer A's session, run
-      `await supabase.from('profiles').update({ role: 'owner' }).eq('id', <A id>)` → denied.
-- [ ] With an anonymous client (anon key, no session), `select` on `invoices` and `patients`
-      returns nothing.
-- [ ] A customer reading `daily_revenue` sees at most their own paid invoices (owner sees all).
+
+- [ ] Customer A's session: `select` on `appointments` returns only A's rows.
+- [ ] Customer A cannot update their own `profiles.role`.
+- [ ] Anonymous client sees no invoices.
+- [ ] A customer reading `daily_revenue` sees at most their own paid invoices.
 
 **Operations**
-- [ ] Inventory: add an item, record stock in/out, confirm quantity changes and the movement is
-      logged; CSV export downloads.
-- [ ] Low stock + expiring views populate the dashboard.
-- [ ] Billing: create an invoice from an appointment, verify totals, mark paid, download PDF with
-      the clinic header.
-- [ ] Audit log shows the appointment/invoice/role changes with actor and JSON details.
-- [ ] Forgot password → email link opens `/reset-password` → new password works.
-- [ ] Dark mode toggle and mobile layout (≤ 400 px) are usable.
 
-**Database**
-- [ ] `select * from cron.job;` lists both ClinicFlow jobs as active.
-- [ ] `select * from cron.job_run_details order by start_time desc limit 5;` shows successful runs.
-- [ ] `select * from supabase_migrations.schema_migrations;` includes all six migrations.
+- [ ] Inventory add / stock in / stock out / CSV export.
+- [ ] Low-stock and expiring views populate the dashboard.
+- [ ] Billing: create from appointment, totals correct, mark paid, PDF downloads.
+- [ ] Audit log records appointment, invoice and role changes.
+- [ ] Forgot password → email link → `/reset-password` → new password works.
+- [ ] Dark-mode toggle and mobile layout (≤ 400 px) are usable.
+- [ ] `select * from cron.job;` lists both jobs after scheduling.
 
 ---
 
-## Tests and quality checks
+## Migration notes
 
-```bash
-npm run typecheck      # strict TypeScript, no `any`
-npm test               # Vitest: invoice math, dates, CSV, slot generation, partition
-npm run build          # typecheck + production bundle into dist/
-npm run preview        # serve the built bundle locally
-```
+### What was replaced, and why it is equivalent
 
-The suite covers the pure slot logic that mirrors `get_available_slots` and the invoice math that
-mirrors the SQL generated columns, plus date/timezone, CSV escaping and error mapping.
+- **React components → HTML templates.** Each page module returns an HTML string plus a `mount()`
+  function that binds events with `addEventListener`. State lives in small closures; no virtual DOM.
+- **React Router → History API router.** Same paths, same guard semantics (`app`, `guest`, `roles`),
+  same `?next=` redirect-back behaviour, delegated SPA link handling, 404 fallback.
+- **Contexts → `store.js`.** One auth store with subscriptions, one theme applier, one toast stack.
+  Supabase `onAuthStateChange` and profile retry logic are preserved verbatim.
+- **Tailwind → `styles.css`.** A hand-written component layer (`.btn`, `.card`, `.field`, `.badge`,
+  `.table`, `.modal`, `.app-layout`, landing sections) with the original brand (`#2278eb`) and accent
+  (`#14b596`) palette, radii, shadows and class-based dark mode. Responsive breakpoints mirror the
+  original (`640`, `768`, `1024`, `1200`, ≤ 420 px).
+- **Zod → `validation.js`.** Same rules and the exact same user-facing messages, including invoice
+  line-item errors and availability time ordering.
+- **Recharts → `charts.js`.** Dependency-free SVG line and bar charts with axes, grid lines, hover
+  tooltips and the same data/colours. This is the only visual implementation difference; the data and
+  labels are identical.
+- **React Hook Form → plain FormData + validators.** Loading states, ARIA invalid flags and error
+  slots behave the same.
+- **Deno Edge Functions → FastAPI endpoints.** The RLS-visibility-first check for booking
+  confirmations, service-role authentication for jobs, Resend payloads, subjects and HTML bodies are
+  ported line for line.
 
----
+### Deliberate, documented differences
 
-## Troubleshooting
+1. **Charts are SVG instead of Recharts.** Recharts is a React-only library; drawing the same line and
+   bar charts with SVG keeps the UI and data while removing the framework dependency.
+2. **The frontend is served by FastAPI instead of a CDN static host.** A Python backend is required by
+   the target stack; serving the static SPA from it keeps one origin.
+3. **Configuration is delivered at runtime** (`/api/config.js`) instead of being inlined by Vite.
+   This is required without a bundler and is safer: the allow-list cannot leak a service key.
+4. **The legacy Edge Functions were removed** (`supabase/functions/`), because the stack must not
+   contain Deno/TypeScript server code. Their behaviour lives in `backend/app/routes/`.
+5. **The old `public/_headers` / `_redirects` files were removed**; the same headers and SPA fallback
+   are now applied by FastAPI (`backend/app/main.py`).
+6. **`supabase/config.toml` auth URLs moved from port 5173 to 8000.** This is local development
+   configuration only; it does not touch the remote database.
 
-| Symptom | Cause / fix |
-| --- | --- |
-| Amber “Supabase is not configured” banner | `.env` missing or Vite env vars not set; rebuild after changing them. |
-| Login fails with “Invalid login credentials” | Email not confirmed (check Auth settings / inbox) or wrong password. |
-| “Your profile is not ready yet” | The `on_auth_user_created` trigger did not run or migrations are missing; sign out/in, verify `select * from public.profiles`. |
-| New user sees customer nav after promotion | Refresh; the profile is cached in the session context. |
-| Edge function returns 401 | Missing/incorrect Authorization header, or `RESEND_API_KEY` not set when calling Resend. |
-| Emails not delivered | Resend domain not verified, sender not allowed, check `net._http_response` and function logs. |
-| Cron jobs missing | Vault secrets `project_url`/`service_role_key` not created; run `select public.schedule_clinicflow_jobs();`. |
-| Slots look shifted by hours | `clinicflow.timezone` in Postgres and `VITE_CLINIC_TIMEZONE`/`CLINIC_TIMEZONE` disagree. |
-| Second booking returns a constraint error | Expected under concurrency; the UI maps it to a friendly “slot just taken” message. |
-| PDF download blocked | Browser popup/download blocker; jsPDF uses a Blob download, no server involved. |
+### What was explicitly preserved
+
+- All tables, columns, enums, CHECK constraints, foreign keys, indexes, generated columns.
+- The GiST exclusion constraint and booking rate limit.
+- All RLS policies and grants.
+- All SQL functions, triggers and views.
+- Seed data and demo accounts.
+- Supabase Auth usage (email/password, confirmation, recovery, PKCE, session persistence).
+- Storage configuration in `supabase/config.toml` (the app does not use storage buckets).
+- Every form field, validation message, toast, modal, badge and table column.
+- The invoice PDF layout and clinic branding.
+- Resend email subjects and HTML structure.
 
 ---
 
@@ -555,26 +613,33 @@ mirrors the SQL generated columns, plus date/timezone, CSV escaping and error ma
 
 **Security**
 
-- RLS is enabled on every table, including `audit_logs`; there are no “allow all” policies.
-- The frontend only ever holds the anon key and the user's JWT. Service-role access exists only in
-  Edge Functions and pg_cron.
-- All user text is rendered through React (escaped automatically); the codebase contains no
-  `dangerouslySetInnerHTML`. Email templates escape every interpolated value.
-- All mutations are validated by Zod and by SQL CHECK constraints; policies scope rows by
-  `auth.uid()` / role.
-- Security headers are applied by Cloudflare Pages; `frame-ancestors 'none'` and
-  `X-Frame-Options: DENY` prevent clickjacking.
-- Booking is rate-limited in the database (5/hour/customer), not just in the browser.
+- RLS is enabled on every table, including `audit_logs`; there are no "allow all" policies.
+- The browser only holds the anon key and the user's JWT. The service role key exists only in the
+  Python process.
+- `/api/config.js` is generated from an explicit allow-list; a test asserts the service key never
+  appears.
+- The booking-confirmation endpoint validates the user's JWT and then re-reads the appointment with
+  that JWT (RLS) before using the service role.
+- Job endpoints compare the bearer token to the service role key in constant time.
+- All user text is escaped (`escapeHtml`) before it reaches HTML or email templates; no
+  `innerHTML` receives unescaped user data.
+- Security headers (CSP, HSTS, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`,
+  `Permissions-Policy`) are applied to every response.
+- Booking is rate-limited in the database (5/hour/customer).
 
-**Intentional limitations**
+**Intentional limitations (unchanged from the original)**
 
-- One clinic per deployment (single-tenant). Multi-clinic tenancy would need a `clinic_id` column and
-  updated policies.
-- Staff schedule new appointments only through the customer flow; a staff-side “book for patient”
-  form is not included.
-- Invoices are one-off documents; there is no payment gateway integration (mark-as-paid only).
+- One clinic per deployment (single-tenant).
+- Staff schedule new appointments only through the customer flow.
+- Invoices are one-off documents; no payment gateway (mark-as-paid only).
 - Reminder and digest schedules are fixed in SQL; adjust the cron expressions and redeploy.
-- `dist/` is a static SPA; server-side rendering is intentionally not used.
+- The SPA is client-rendered; there is no server-side rendering.
+
+**Operational notes**
+
+- The frontend uses ES modules with relative imports, so it must be served over HTTP (not
+  `file://`).
+- Realtime subscriptions were not part of the original app and were not added.
 
 ---
 
@@ -584,16 +649,15 @@ These cannot be automated from the repository:
 
 | # | Task | Where |
 | --- | --- | --- |
-| 1 | Create the Supabase project and copy URL + anon key | Supabase Dashboard |
+| 1 | Create the Supabase project and copy URL + anon + service role keys | Supabase Dashboard |
 | 2 | `supabase login`, `supabase link`, `supabase db push` (or run migrations in SQL Editor) | CLI / SQL Editor |
 | 3 | Set `clinicflow.timezone` and `pg_reload_conf()` | SQL Editor |
-| 4 | Enable Email auth, set Site URL + redirect URLs | Authentication settings |
+| 4 | Enable Email auth, set Site URL + redirect URLs (`/login`, `/reset-password`) | Authentication settings |
 | 5 | Sign up and promote the first owner via SQL | SQL Editor |
 | 6 | Create a Resend account, verify sending domain, create API key | resend.com |
-| 7 | `supabase secrets set RESEND_API_KEY=… RESEND_FROM_EMAIL=…` | CLI / Dashboard |
-| 8 | Deploy the three Edge Functions | `supabase functions deploy …` |
-| 9 | Add Vault secrets `project_url` and `service_role_key`, run `schedule_clinicflow_jobs()` | SQL Editor |
-| 10 | Create the Cloudflare Pages project, set build/output and env vars | Cloudflare Dashboard |
-| 11 | Add the Pages/custom domain to Supabase redirect URLs | Authentication settings |
-| 12 | Rotate/delete the seeded demo accounts before going live | Supabase / app |
-| 13 | Complete the post-deploy checklist above | Browser + SQL |
+| 7 | Put `RESEND_API_KEY` and `RESEND_FROM_EMAIL` in the backend `.env` | Server environment |
+| 8 | Deploy the Python backend and confirm `/api/health` | Python host |
+| 9 | Add Vault secret `service_role_key`, run `schedule_clinicflow_backend_jobs(url)` | SQL Editor |
+| 10 | Point your domain/TLS proxy at the backend | DNS / proxy |
+| 11 | Rotate/delete the seeded demo accounts before going live | Supabase / app |
+| 12 | Complete the end-to-end checklist above | Browser + SQL |
